@@ -1,0 +1,25 @@
+[package]
+name = "py-evm-executor"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name="tinyevm"
+crate_type = ["cdylib"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+evm = { git = "https://github.com/rust-blockchain/evm", branch = "master" }
+eyre = "0.6.8"
+hex = "0.4.3"
+primitive-types = { version = "0.11.1", features = ["scale-info"] }
+tokio = { version = "1.19.2", features = ["full"] }
+microbench = "0.5.0"
+sha3 = "0.10.1"
+maplit = "1.0.2"
+
+[dev-dependencies]
+ethers = { git = "https://github.com/gakonst/ethers-rs", rev="6b6c5115838008565d774d784262e61e01129ebb", default-features = false, features = ["legacy"] }
+ethers-solc = { git = "https://github.com/gakonst/ethers-rs", rev="6b6c5115838008565d774d784262e61e01129ebb", features = ["full"] }
+ethers-providers = { git = "https://github.com/gakonst/ethers-rs", rev="6b6c5115838008565d774d784262e61e01129ebb", features = ["ws"] }
