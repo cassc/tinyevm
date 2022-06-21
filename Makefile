@@ -1,4 +1,8 @@
+prepare:
+	cargo install cargo-criterion
 build:
 	cargo build --release 
 test: 
-	python example/example.py
+	cargo test
+bench:
+	cargo bench
