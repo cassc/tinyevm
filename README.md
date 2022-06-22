@@ -1,8 +1,6 @@
-# py-evm-executor
+# tinyevm
 Executor EVM bytecode from Python
-
-
-- To build dynamic library, run 
+To build a dynamic library, run 
 
 ``` bash
 make build
