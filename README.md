@@ -1,6 +1,9 @@
 # tinyevm
 Executor EVM bytecode from Python
-To build a dynamic library, run 
+
+## Build dynamically linked library
+
+Build a dynamic library with the following command, the dynamic link file will be generated at `target/release/libtinyevm.so`.
 
 ``` bash
 make build
@@ -18,7 +21,9 @@ make test
 make bench
 ```
 
-- You can find the example usage in Python at `example/example.py`
+## Sample usage
+
+You can find example usage in Python at `example/example.py`
 
 Example files:
 
@@ -28,4 +33,4 @@ example
 └── example/example.py # Sample code in Python 
 ```
 
-The contract `C` used in the above example is compiled from [data_structures.sol](https://github.com/cassc/evm-play/tree/main/contracts).
+The contract `C` used in this example is compiled from [data_structures.sol](https://github.com/cassc/evm-play/tree/main/contracts).
