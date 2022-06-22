@@ -1,15 +1,12 @@
 #![feature(test)]
-
+#![feature(assert_matches)]
+#![feature(local_key_cell_methods)]
 extern crate lazy_static;
 extern crate libc;
-
 use evm::backend::{MemoryAccount, MemoryBackend, MemoryVicinity};
-use evm::executor::stack::{
-    MemoryStackState, MemoryStackSubstate, PrecompileFailure, PrecompileOutput, PrecompileSet,
-    StackExecutor, StackState, StackSubstateMetadata,
-};
-use evm::{Capture, Config, Context, CreateScheme, ExitReason, Handler};
-use eyre::{eyre, ContextCompat, Result};
+use evm::executor::stack::{MemoryStackState, StackExecutor, StackSubstateMetadata};
+use evm::{Config, CreateScheme, ExitReason};
+use eyre::{eyre, Result};
 use hex::ToHex;
 use lazy_static::lazy_static;
 use libc::c_char;
@@ -20,15 +17,30 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
+use tracing::info;
 
 type StaticStackExecutor =
     StackExecutor<'static, 'static, MemoryStackState<'static, 'static, MemoryBackend<'static>>, ()>;
 
 const MAX_GAS: u64 = 1_000_000_000_000_000;
 
+// thread_local! {
+//     static EVM_EXECUTOR: Cell<Option<StaticStackExecutor>> = {
+//         let metadata = StackSubstateMetadata::new(MAX_GAS, &ISTANBUL);
+//         let state = MemoryStackState::new(metadata, &*EVM_BACKEND);
+//         Cell::new(Some(StackExecutor::new_with_precompiles(
+//             state,
+//             &ISTANBUL,
+//             &(),
+//         )))
+//     };
+// }
+
 lazy_static! {
+    /// Default sender of all transactions
     pub static ref OWNER: H160 =
         H160::from_str("0xf000000000000000000000000000000000000000").unwrap();
+    /// Initial states of the EVM, gives OWNER 1e12 ethers
     pub static ref INITIAL_STATE: BTreeMap<H160, MemoryAccount> = btreemap! {
         OWNER.to_owned() => MemoryAccount {
             nonce: U256::zero(),
@@ -37,7 +49,9 @@ lazy_static! {
             code: Vec::new(),
         }
     };
+    /// Using ISTANBUL fork
     static ref ISTANBUL: Config = Config::istanbul();
+    /// Vicinity setting does not matter for our usage
     static ref VICINITY: MemoryVicinity = MemoryVicinity {
         gas_price: U256::zero(),
         origin: H160::zero(),
@@ -50,10 +64,12 @@ lazy_static! {
         block_gas_limit: U256::zero(),
         block_base_fee_per_gas: U256::zero(),
     };
+    /// EVM backend from vicinity initial states
     static ref EVM_BACKEND: MemoryBackend<'static> = {
         let initial_states = INITIAL_STATE.to_owned();
         MemoryBackend::new(&VICINITY, initial_states)
     };
+    /// Thread safe EVM executor
     static ref EVM_EXECUTOR: Arc<Mutex<StaticStackExecutor>> = {
         let metadata = StackSubstateMetadata::new(MAX_GAS, &ISTANBUL);
         let state = MemoryStackState::new(metadata, &*EVM_BACKEND);
@@ -80,33 +96,68 @@ pub unsafe extern "C" fn deploy(
     let owner = H160::from_str(&owner).unwrap();
 
     let contract_bytecode = hex::decode(&contract_deploy_code).unwrap();
-    let address = deploy_helper(None, H256::zero(), owner, contract_bytecode).unwrap();
-    let address = address.encode_hex::<String>();
+    // let mut exe = make_executor();
+    let mut exe = EVM_EXECUTOR.lock().unwrap();
+    let address = deploy_helper(&mut exe, None, H256::zero(), owner, contract_bytecode).unwrap();
+    let address = format!("0x{}", address.encode_hex::<String>());
     let address = CString::new(address).unwrap();
     // let address = address.as_c_str().as_ptr();
     address.into_raw()
 }
 
 #[no_mangle]
-pub extern "C" fn invoke() -> String {
-    todo!()
+pub extern "C" fn contract_call(
+    contract: *const c_char,
+    sender: *const c_char,
+    data: *const c_char,
+) -> *mut c_char {
+    let sender = unsafe { CStr::from_ptr(sender).to_owned().into_string().unwrap() };
+    let contract = unsafe { CStr::from_ptr(contract).to_owned().into_string().unwrap() };
+    let data = unsafe { CStr::from_ptr(data).to_owned().into_string().unwrap() };
+    info!("contract_call: {} {} {}", contract, sender, data);
+
+    let sender = H160::from_str(&sender).unwrap();
+    let contract = H160::from_str(&contract).unwrap();
+    let data = {
+        if data.starts_with("0x") || data.starts_with("0X") {
+            let data = data[2..].to_owned();
+            hex::decode(data).unwrap()
+        } else {
+            hex::decode(data).unwrap()
+        }
+    };
+    // let mut exe = make_executor();
+
+    let mut exe = EVM_EXECUTOR.lock().unwrap();
+    let resp = contract_call_helper(&mut exe, contract, sender, data);
+    let s = serde_json::to_string(&resp).unwrap();
+    let s = CString::new(s).unwrap();
+    s.into_raw()
 }
 
-fn contract_call(contract: H160, owner: H160, data: Vec<u8>) -> (ExitReason, Vec<u8>) {
-    let mut executor = EVM_EXECUTOR.lock().unwrap();
-    executor.transact_call(owner, contract, U256::zero(), data, u64::MAX, Vec::new())
+fn contract_call_helper(
+    executor: &mut StaticStackExecutor,
+    contract: H160,
+    sender: H160,
+    data: Vec<u8>,
+) -> (ExitReason, Vec<u8>) {
+    // let mut executor: StaticStackExecutor = EVM_EXECUTOR.take().unwrap();
+    // let mut executor = make_executor();
+    let r = executor.transact_call(sender, contract, U256::zero(), data, u64::MAX, Vec::new());
+    // EVM_EXECUTOR.set(Some(executor));
+    r
 }
 
 /// Starting a EVM executor with an optional `initial_states` and
 /// deploy the contract for the `owner`. Returns the address of the
 /// contract if deployment is success.
 fn deploy_helper(
+    executor: &mut StaticStackExecutor,
     _initial_states: Option<BTreeMap<H160, MemoryAccount>>,
     salt: H256,
     owner: H160,
     contract_bytecode: Vec<u8>,
 ) -> Result<H160> {
-    let mut executor = EVM_EXECUTOR.lock().unwrap();
     let reason = executor.transact_create2(
         owner,                     // caller
         U256::zero(),              // value
@@ -116,7 +167,6 @@ fn deploy_helper(
         vec![],                    // access list
     );
 
-    println!("Contract deployed response {reason:#?} ");
     if let (ExitReason::Succeed(_), _) = reason {
         // This part just calculate the address of the contract, which is:
         // https://ethereum.stackexchange.com/questions/760/how-is-the-address-of-an-ethereum-contract-computed
@@ -128,45 +178,63 @@ fn deploy_helper(
             code_hash,
             salt,
         });
-        println!("Contract deployed to adderss {contract:?} ");
+        info!("Contract deployed to adderss {contract:?} ");
         Ok(contract)
     } else {
-        return Err(eyre!("Contract deploy failed, {reason:#?}!"));
+        Err(eyre!("Contract deploy failed, {reason:#?}!"))
     }
+}
+
+#[allow(dead_code)]
+/// Create a new EVM executor
+fn make_executor() -> StaticStackExecutor {
+    let metadata = StackSubstateMetadata::new(MAX_GAS, &ISTANBUL);
+    let state = MemoryStackState::new(metadata, &*EVM_BACKEND);
+    StackExecutor::new_with_precompiles(state, &ISTANBUL, &())
 }
 
 #[cfg(test)]
 mod tests {
+    use std::assert_matches::assert_matches;
+
     use super::*;
     extern crate test;
     use test::Bencher;
+    // balanceOf(owner)
+    const ERC20_BALANCE_BIN_PREFIX: &'static str = "70a08231000000000000000000000000";
+    const TRANSFER_TOKEN_VALUE: u64 = 9999;
 
     lazy_static! {
         static ref CONTRACT_ADDRESS: H160 =
-            H160::from_str("0x04f21ff87c9e4930e6830e5eb25414f999bdf409").unwrap();
-        // balanceOf(owner)
-        static ref ERC20_BALANCE_BIN: Vec<u8> =
-            hex::decode("70a08231000000000000000000000000f000000000000000000000000000000000000000")
-            .unwrap();
-        // transfer(to, value) with value < owner value
-        static ref ERC20_TRANSFER_BIN: Vec<u8> = hex::decode("").unwrap();
+            H160::from_str("0x0803d1e6309ed01468bb1e0837567edd758bc991").unwrap();
+        // Target address to receive some ERC20 tokens
+        static ref TO_ADDRESS: H160 =
+            H160::from_str("0x1000000000000000000000000000000000000000").unwrap();
+        // transfer(to, value) with value = TRANSFER_TOKEN_VALUE to TO_ADDRESS
+        static ref ERC20_TRANSFER_BIN: Vec<u8> = hex::decode("a9059cbb0000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000270f").unwrap();
         // transfer(to, value) with value > owner value
-        static ref ERC20_REVERT_BIN: Vec<u8> = hex::decode("").unwrap();
+        static ref ERC20_REVERT_BIN: Vec<u8> = hex::decode("a9059cbb0000000000000000000000001000000000000000000000000000000000000000000000000000000000000000000000000000000146592adc245b807743c00000").unwrap();
         // total supply of the tokens as defined in contract C, also equals initial token balance of owner
         static ref TOKEN_SUPPLY: U256 = U256::from_dec_str("10000000000000000000000").unwrap();
     }
 
-    fn t_deploy() {
+    fn t_deploy(executor: &mut StaticStackExecutor) {
         let owner = OWNER.to_owned();
         let bytecode = include_str!("../example/C.hex");
         let bytecode = hex::decode(bytecode).unwrap();
 
-        let address = deploy_helper(None, H256::zero(), owner, bytecode.clone()).unwrap();
+        let address = deploy_helper(executor, None, H256::zero(), owner, bytecode.clone()).unwrap();
         assert_eq!(*CONTRACT_ADDRESS, address, "Deployed address {address:#?}");
     }
 
-    fn t_erc20_balance_query() {
-        let reason = contract_call(*CONTRACT_ADDRESS, *OWNER, ERC20_BALANCE_BIN.to_owned());
+    fn t_erc20_balance_query(exe: &mut StaticStackExecutor, address: H160, expected_balance: U256) {
+        let data = format!(
+            "{}{}",
+            ERC20_BALANCE_BIN_PREFIX,
+            address.encode_hex::<String>()
+        );
+        let data = hex::decode(data).unwrap();
+        let reason = contract_call_helper(exe, *CONTRACT_ADDRESS, *OWNER, data);
         assert!(matches!(reason.0, ExitReason::Succeed(_)));
         let balance = {
             if let (ExitReason::Succeed(_), data) = reason {
@@ -177,17 +245,68 @@ mod tests {
             }
         };
 
-        assert_eq!(*TOKEN_SUPPLY, balance);
-    }
-
-    fn t_transfer() {
-        let reason = contract_call(*CONTRACT_ADDRESS, *OWNER, ERC20_TRANSFER_BIN.to_owned());
+        assert_eq!(expected_balance, balance);
     }
 
     #[test]
-    fn test_deploy_query_balance() {
-        t_deploy();
-        t_erc20_balance_query();
+    fn test_contract_deploy_transfer_query() {
+        let mut exe = make_executor();
+        t_deploy(&mut exe);
+
+        t_erc20_balance_query(&mut exe, *OWNER, *TOKEN_SUPPLY);
+        t_erc20_balance_query(&mut exe, *TO_ADDRESS, U256::zero());
+
+        for _ in 0..2 {
+            let result = contract_call_helper(
+                &mut exe,
+                *CONTRACT_ADDRESS,
+                *OWNER,
+                ERC20_TRANSFER_BIN.to_owned(),
+            );
+            assert_matches!(result, (ExitReason::Succeed(_), _));
+        }
+
+        t_erc20_balance_query(&mut exe, *OWNER, *TOKEN_SUPPLY - 2 * TRANSFER_TOKEN_VALUE);
+        t_erc20_balance_query(
+            &mut exe,
+            *TO_ADDRESS,
+            U256::zero() + 2 * TRANSFER_TOKEN_VALUE,
+        );
+    }
+
+    #[test]
+    fn test_contract_method_revert() {
+        let mut exe = make_executor();
+        t_deploy(&mut exe);
+        let result = contract_call_helper(
+            &mut exe,
+            *CONTRACT_ADDRESS,
+            *OWNER,
+            ERC20_REVERT_BIN.to_owned(),
+        );
+        println!("T resp: {:?}", result);
+        assert_matches!(result, (ExitReason::Revert(_), _));
+    }
+
+    #[bench]
+    fn bench_token_transfer(b: &mut Bencher) {
+        let mut exe = make_executor();
+        t_deploy(&mut exe);
+
+        let mut owner_balance = *TOKEN_SUPPLY;
+        b.iter(|| {
+            let result = contract_call_helper(
+                &mut exe,
+                *CONTRACT_ADDRESS,
+                *OWNER,
+                ERC20_TRANSFER_BIN.to_owned(),
+            );
+            assert_matches!(result, (ExitReason::Succeed(_), _));
+            owner_balance = owner_balance
+                .checked_sub(U256::from(TRANSFER_TOKEN_VALUE))
+                .unwrap();
+            t_erc20_balance_query(&mut exe, *OWNER, owner_balance);
+        });
     }
 
     #[bench]
@@ -195,6 +314,9 @@ mod tests {
         let owner = OWNER.to_owned();
         let bytecode = include_str!("../example/C.hex");
         let bytecode = hex::decode(bytecode).unwrap();
-        b.iter(|| deploy_helper(None, H256::random(), owner, bytecode.clone()));
+        b.iter(|| {
+            let mut exe = make_executor();
+            deploy_helper(&mut exe, None, H256::random(), owner, bytecode.clone())
+        });
     }
 }
