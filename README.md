@@ -29,3 +29,5 @@ example
 ├── example/C.hex      # Compiled contract deploy bytecode as hex
 └── example/example.py # Sample code in Python 
 ```
+
+The contract `C` used in the above example is compiled from [data_structures.sol](https://github.com/cassc/evm-play/tree/main/contracts).
