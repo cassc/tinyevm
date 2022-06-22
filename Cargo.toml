@@ -1,0 +1,28 @@
+[package]
+name = "tinyevm"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name="tinyevm"
+crate_type = ["cdylib"]
+path="src/lib.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+evm = { git = "https://github.com/rust-blockchain/evm", branch = "master", features=["with-serde"] }
+eyre = "0.6.8"
+hex = "0.4.3"
+primitive-types = { version = "0.11.1", features = ["scale-info"] }
+microbench = "0.5.0"
+sha3 = "0.10.1"
+maplit = "1.0.2"
+libc = "0.2.126"
+lazy_static = "1.4.0"
+serde_json = "1.0.81"
+tracing = "0.1.35"
+tracing-subscriber = "0.3.11"
+
+
+
