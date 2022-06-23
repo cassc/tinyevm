@@ -92,3 +92,32 @@ resp = json.loads(resp)
 err = bytearray(resp[1][64:]).decode() 
 print(f'transfer(to, 9999)                 => {resp}')
 print(f'                                   => {err}')
+
+################################################################################
+# Benchmarks
+print('=' * 80)
+print('Benchmarks')
+import timeit
+
+def balance_of(contract, owner):
+    resp = h.contract_call(contract.encode(), owner.encode(), f'0x70a08231000000000000000000000000{owner[2:]}'.encode()).decode()
+    return int.from_bytes(json.loads(resp)[1], 'big')
+
+start_balance = balance_of(contract_address, owner)
+print(f'owner start balance {start_balance}')
+
+def transact_query():
+    h.contract_call(contract_address.encode(), owner.encode(), tranfer_token_valid.encode()).decode()
+    h.contract_call(contract_address.encode(), owner.encode(), query_balance.encode()).decode()
+
+n_runs = 1000
+duration = timeit.Timer(transact_query).timeit(number=n_runs)
+end_balance = balance_of(contract_address, owner)
+print(f'owner end balance {end_balance}')
+
+assert start_balance - end_balance == n_runs * 9999
+
+
+print(f'transact_query average time: {duration/n_runs * 1000} ms')
+
+
