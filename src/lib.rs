@@ -98,9 +98,8 @@ pub unsafe extern "C" fn deploy(
     let owner = H160::from_str(&owner).unwrap();
 
     let contract_bytecode = hex::decode(&contract_deploy_code).unwrap();
-    // let mut exe = make_executor();
     let mut exe = EVM_EXECUTOR.lock().unwrap();
-    let address = deploy_helper(&mut exe, None, H256::zero(), owner, contract_bytecode).unwrap();
+    let address = deploy_helper(&mut exe, H256::zero(), owner, contract_bytecode).unwrap();
     let address = format!("0x{}", address.encode_hex::<String>());
     let address = CString::new(address).unwrap();
     // let address = address.as_c_str().as_ptr();
@@ -185,11 +184,7 @@ fn contract_call_helper(
     sender: H160,
     data: Vec<u8>,
 ) -> (ExitReason, Vec<u8>) {
-    // let mut executor: StaticStackExecutor = EVM_EXECUTOR.take().unwrap();
-    // let mut executor = make_executor();
-    let r = executor.transact_call(sender, contract, U256::zero(), data, u64::MAX, Vec::new());
-    // EVM_EXECUTOR.set(Some(executor));
-    r
+    executor.transact_call(sender, contract, U256::zero(), data, u64::MAX, Vec::new())
 }
 
 /// Starting a EVM executor with an optional `initial_states` and
@@ -197,7 +192,6 @@ fn contract_call_helper(
 /// contract if deployment is success.
 fn deploy_helper(
     executor: &mut StaticStackExecutor,
-    _initial_states: Option<BTreeMap<H160, MemoryAccount>>,
     salt: H256,
     owner: H160,
     contract_bytecode: Vec<u8>,
@@ -275,7 +269,7 @@ mod tests {
         let bytecode = include_str!("../example/C.hex");
         let bytecode = hex::decode(bytecode).unwrap();
 
-        let address = deploy_helper(executor, None, H256::zero(), owner, bytecode.clone()).unwrap();
+        let address = deploy_helper(executor, H256::zero(), owner, bytecode.clone()).unwrap();
 
         println!(
             "Start states: {}",
@@ -374,7 +368,7 @@ mod tests {
         let bytecode = hex::decode(bytecode).unwrap();
         b.iter(|| {
             let mut exe = make_executor();
-            deploy_helper(&mut exe, None, H256::random(), owner, bytecode.clone())
+            deploy_helper(&mut exe, H256::random(), owner, bytecode.clone())
         });
     }
 }
