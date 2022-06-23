@@ -17,10 +17,10 @@ use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{debug, info};
 
-type StaticStackExecutor =
-    StackExecutor<'static, 'static, MemoryStackState<'static, 'static, MemoryBackend<'static>>, ()>;
+type StaticStackExecutor<'a> =
+    StackExecutor<'a, 'a, MemoryStackState<'a, 'a, MemoryBackend<'a>>, ()>;
 
 const MAX_GAS: u64 = 1_000_000_000_000_000;
 
@@ -45,7 +45,9 @@ lazy_static! {
         OWNER.to_owned() => MemoryAccount {
             nonce: U256::zero(),
             balance: U256::from(1_000_000_000_000u64),
-            storage: BTreeMap::new(),
+            storage: btreemap!{
+                H256::random() => H256::random()
+            },
             code: Vec::new(),
         }
     };
@@ -70,7 +72,7 @@ lazy_static! {
         MemoryBackend::new(&VICINITY, initial_states)
     };
     /// Thread safe EVM executor
-    static ref EVM_EXECUTOR: Arc<Mutex<StaticStackExecutor>> = {
+    static ref EVM_EXECUTOR: Arc<Mutex<StaticStackExecutor<'static>>> = {
         let metadata = StackSubstateMetadata::new(MAX_GAS, &ISTANBUL);
         let state = MemoryStackState::new(metadata, &*EVM_BACKEND);
         Arc::new(Mutex::new(StackExecutor::new_with_precompiles(
@@ -135,6 +137,48 @@ pub extern "C" fn contract_call(
     s.into_raw()
 }
 
+/// Excecute a contract method with inital states
+#[no_mangle]
+pub extern "C" fn contract_call_with_initial_states(
+    initial_states: *const c_char,
+    contract: *const c_char,
+    sender: *const c_char,
+    data: *const c_char,
+) -> *mut c_char {
+    let initial_states = unsafe {
+        CStr::from_ptr(initial_states)
+            .to_owned()
+            .into_string()
+            .unwrap()
+    };
+    let initial_states: BTreeMap<H160, MemoryAccount> =
+        serde_json::from_str(&initial_states).unwrap();
+
+    debug!("initial-states: {initial_states:?}");
+
+    let sender = unsafe { CStr::from_ptr(sender).to_owned().into_string().unwrap() };
+    let contract = unsafe { CStr::from_ptr(contract).to_owned().into_string().unwrap() };
+    let data = unsafe { CStr::from_ptr(data).to_owned().into_string().unwrap() };
+    info!("contract_call: {} {} {}", contract, sender, data);
+
+    let sender = H160::from_str(&sender).unwrap();
+    let contract = H160::from_str(&contract).unwrap();
+    let data = {
+        if data.starts_with("0x") || data.starts_with("0X") {
+            let data = data[2..].to_owned();
+            hex::decode(data).unwrap()
+        } else {
+            hex::decode(data).unwrap()
+        }
+    };
+    let backend = MemoryBackend::new(&VICINITY, initial_states);
+    let mut exe = make_executor_with_initial_states(&backend);
+    let resp = contract_call_helper(&mut exe, contract, sender, data);
+    let s = serde_json::to_string(&resp).unwrap();
+    let s = CString::new(s).unwrap();
+    s.into_raw()
+}
+
 fn contract_call_helper(
     executor: &mut StaticStackExecutor,
     contract: H160,
@@ -187,9 +231,17 @@ fn deploy_helper(
 
 #[allow(dead_code)]
 /// Create a new EVM executor
-fn make_executor() -> StaticStackExecutor {
+fn make_executor() -> StaticStackExecutor<'static> {
     let metadata = StackSubstateMetadata::new(MAX_GAS, &ISTANBUL);
     let state = MemoryStackState::new(metadata, &*EVM_BACKEND);
+    StackExecutor::new_with_precompiles(state, &ISTANBUL, &())
+}
+
+fn make_executor_with_initial_states<'a>(
+    backend: &'a MemoryBackend<'a>,
+) -> StaticStackExecutor<'a> {
+    let metadata = StackSubstateMetadata::new(MAX_GAS, &ISTANBUL);
+    let state = MemoryStackState::new(metadata, backend);
     StackExecutor::new_with_precompiles(state, &ISTANBUL, &())
 }
 
@@ -224,6 +276,12 @@ mod tests {
         let bytecode = hex::decode(bytecode).unwrap();
 
         let address = deploy_helper(executor, None, H256::zero(), owner, bytecode.clone()).unwrap();
+
+        println!(
+            "Start states: {}",
+            serde_json::to_string(&*INITIAL_STATE).unwrap()
+        );
+
         assert_eq!(*CONTRACT_ADDRESS, address, "Deployed address {address:#?}");
     }
 
